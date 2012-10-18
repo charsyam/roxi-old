@@ -6,6 +6,8 @@
 #include <roxi/roxi.h>
 #include <roxi/RoxiCommandInfo.h>
 #include <roxi/RoxiConfig.h>
+#include <roxi/Proxy.h>
+#include <roxi/locking_queue.h>
 
 
 const char *default_roxi_conf_path = "./roxi.conf";
@@ -30,11 +32,15 @@ int main(int argc, char* argv[])
     int rc = config.load_conf( command_info.path() );
     dumpConfig(config);
 
-    if (0 != rc)
-    {
-        usage();
-        return 1;
+    try {
+        boost::asio::io_service io_service;
+        roxi::locking_queue<roxi::RedisPacket> queue;
+        roxi::Proxy s(io_service, config, queue);
+        io_service.run();
     }
-
+    catch (std::exception& e)
+    {
+        std::cerr << "Exception: " << e.what() << "\n";
+    } 
     return 0;
 }

@@ -32,6 +32,10 @@ public:
     int port() { 
         return port_; 
     } 
+
+    const char* host() {
+        return host_.c_str();
+    }
  
     int getServerPairCount() { 
         return server_pairs_.size(); 
@@ -58,6 +62,8 @@ public:
         }
 
         port_ = root.get("port", 9999).asInt();
+        host_ = root.get("host", "0.0.0.0").asString();
+
         const Json::Value server_pairs = root["server_pairs"];
         if( server_pairs.size() == 0 ) {
             std::cout << "No Server Pairs\n";
@@ -76,6 +82,7 @@ public:
 private: 
     std::vector<RoxiServerPair> server_pairs_;  
     int port_; 
+    std::string host_;
 };
 
 }

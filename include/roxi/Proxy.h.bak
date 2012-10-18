@@ -1,0 +1,226 @@
+#pragma once
+
+#include <boost/bind.hpp>
+#include <boost/asio.hpp>
+#include <vector>
+
+using boost::asio::ip::tcp;
+
+#include <roxi/RoxiConfig.h>
+
+namespace roxi {
+
+class session;
+
+class RedisConnection
+{
+public:
+    RedisConnection( boost::asio::io_service& _io_service, const char* _host, const int _port )
+        : socket_(_io_service), io_service_(_io_service), cur_session_(NULL)
+    {
+        tcp::resolver resolver(_io_service);
+        char buffer[1024];
+        sprintf( buffer, "%d", _port );
+
+        tcp::resolver::query query(_host, buffer );
+        tcp::resolver::iterator endpoint_iterator = resolver.resolve(query);
+
+        boost::asio::async_connect(socket_, endpoint_iterator,
+                boost::bind(&RedisConnection::handle_connect, this,
+                boost::asio::placeholders::error));
+    }
+
+    tcp::socket& socket()
+    {
+        return socket_;
+    }
+
+    void write( const char* _msg, int _size, session* _session)
+    {
+        io_service_.post(boost::bind(&RedisConnection::do_write, this, _msg, _size, _session));
+    }
+
+    void close()
+    {
+        io_service_.post(boost::bind(&RedisConnection::do_close, this));
+    }
+
+    void handle_connect(const boost::system::error_code& error)
+    {
+        if (!error)
+        {
+            std::cout << "Connect to Redis\n";
+            socket_.async_read_some(boost::asio::buffer(data_, max_length),
+                boost::bind(&RedisConnection::handle_read, this,
+                boost::asio::placeholders::error,
+                boost::asio::placeholders::bytes_transferred));
+        }
+    }
+
+    void handle_read(const boost::system::error_code& error,
+                    size_t bytes_transferred)
+    {
+        if (!error)
+        {
+            data_[bytes_transferred] = 0;
+            std::cout << "Data read: " << data_ << std::endl;
+            cur_session_->write( data_, bytes_transferred ); 
+            socket_.async_read_some(boost::asio::buffer(data_, max_length),
+                boost::bind(&RedisConnection::handle_read, this,
+                boost::asio::placeholders::error,
+                boost::asio::placeholders::bytes_transferred));
+        }
+        else
+        {
+            do_close();
+        }
+    }
+
+    void do_write(const char *_msg, const int _size, session* _cur_session)
+    {
+        cur_session_ = _cur_session;
+        boost::asio::async_write(socket_,
+                    boost::asio::buffer(_msg, _size),
+                    boost::bind(&RedisConnection::handle_write, this,
+                    _cur_session,
+                    boost::asio::placeholders::error));
+    }
+
+    void handle_write(session* _session, const boost::system::error_code& error)
+    {
+        if (!error)
+        {
+        }
+        else
+        {
+            do_close();
+        }
+    }
+
+    void do_close()
+    {
+        socket_.close();
+    }
+
+private:
+    tcp::socket socket_;
+    boost::asio::io_service& io_service_;
+    enum { max_length = 1024 };
+    char data_[max_length];
+    session* cur_session_;
+};
+
+class session
+{
+public:
+    session(boost::asio::io_service& io_service, std::vector<RedisConnection*>& _redis_connections)
+        : socket_(io_service), redis_connections_(_redis_connections)
+    {
+    }
+
+    tcp::socket& socket()
+    {
+        return socket_;
+    }
+
+    void start()
+    {
+        socket_.async_read_some(boost::asio::buffer(data_, max_length),
+                boost::bind(&session::handle_read, this,
+                    boost::asio::placeholders::error,
+                    boost::asio::placeholders::bytes_transferred));
+    }
+
+    void write( const char* _msg, int _size)
+    {
+        boost::asio::async_write(socket_,
+                    boost::asio::buffer(_msg, _size),
+                    boost::bind(&session::handle_write, this,
+                    boost::asio::placeholders::error));
+    }
+
+    void handle_read(const boost::system::error_code& error,
+            size_t bytes_transferred)
+    {
+        if (!error)
+        {
+            data_[bytes_transferred] = 0;
+            std::cout << "Data read: " << data_ << std::endl;
+            redis_connections_[0]->write( data_, bytes_transferred, this );
+
+            socket_.async_read_some(boost::asio::buffer(data_, max_length),
+                boost::bind(&session::handle_read, this,
+                    boost::asio::placeholders::error,
+                    boost::asio::placeholders::bytes_transferred));
+        }
+        else
+        {
+            delete this;
+        }
+    }
+
+    void handle_write(const boost::system::error_code& error)
+    {
+        if (!error)
+        {
+        }
+        else
+        {
+            delete this;
+        }
+    }
+
+private:
+    std::vector<RedisConnection*>& redis_connections_;
+    tcp::socket socket_;
+    enum { max_length = 1024 };
+    char data_[max_length];
+};
+
+class Proxy
+{
+public:
+    Proxy(boost::asio::io_service& io_service, RoxiConfig& _config)
+        : io_service_(io_service),
+            acceptor_(io_service, tcp::endpoint(tcp::v4(), _config.port() ))
+    {
+        for( int i = 0; i < _config.getServerPairCount(); i++ ) {
+            RoxiServerPair &pair = _config.server_pairs(i);
+            RedisConnection* new_conn = new RedisConnection(io_service, pair.master(), 2000 );
+            redis_connections_.push_back(new_conn);
+        }
+
+        start_accept();
+    }
+
+private:
+    void start_accept()
+    {
+        session* new_session = new session(io_service_, redis_connections_);
+        acceptor_.async_accept(new_session->socket(),
+                boost::bind(&Proxy::handle_accept, this, new_session,
+                    boost::asio::placeholders::error));
+    }
+
+    void handle_accept(session* new_session,
+            const boost::system::error_code& error)
+    {
+        if (!error)
+        {
+            new_session->start();
+        }
+        else
+        {
+            delete new_session;
+        }
+
+        start_accept();
+    }
+
+    boost::asio::io_service& io_service_;
+    tcp::acceptor acceptor_;
+    std::vector<RedisConnection*> redis_connections_;
+};
+
+
+}
