@@ -5,6 +5,7 @@ roxi is Redis Server Proxy.( It's name comes from Moxi(Memcached Server Proxy) )
 
 roxi.conf(json format)
 ===============================================================================   
+```json
 {
     "proxy_port": 9999,
     "nodes": [
@@ -21,6 +22,7 @@ roxi.conf(json format)
         { "master": "node_5", "slave" : "node_6" }
     ]
 }
+```
 
 Requirement
 ===========
